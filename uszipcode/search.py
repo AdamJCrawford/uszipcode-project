@@ -86,12 +86,15 @@ class SearchEngine(object):
         instance for each thread.
     """
     _city_list = None
+    _county_list = None
     _state_list = None
     """
-    all available state list, in long format 
+    all available state list, in long format
     """
     _state_to_city_mapper = None
     _city_to_state_mapper = None
+    _county_to_state_mapper = None
+    _state_to_county_mapper = None
 
     def __init__(self,
                  simple_zipcode=True,
@@ -103,7 +106,8 @@ class SearchEngine(object):
         if engine is None:
             if simple_zipcode:
                 if not is_simple_db_file_exists(db_file_dir):
-                    download_simple_db_file(db_file_dir, download_url=download_url)
+                    download_simple_db_file(
+                        db_file_dir, download_url=download_url)
                 engine = connect_to_simple_zipcode_db(db_file_dir)
                 self.zip_klass = SimpleZipcode
             else:  # pragma: no cover
@@ -134,13 +138,18 @@ class SearchEngine(object):
 
     def _get_cache_data(self):
         self._city_list = set()
+        self._county_list = set()
         self._state_list = list()
         self._state_to_city_mapper = dict()
         self._city_to_state_mapper = dict()
-
-        for major_city, state in self.ses.query(self.zip_klass.major_city, self.zip_klass.state):
+        self._county_to_state_mapper = dict()
+        self._state_to_county_mapper = dict()
+        for major_city, county, state in self.ses.query(self.zip_klass.major_city, self.zip_klass.county, self.zip_klass.state):
             if major_city is not None:
                 self._city_list.add(major_city)
+
+            if county is not None:
+                self._county_list.add(county)
 
                 if state is not None:
                     state = state.upper()
@@ -150,12 +159,24 @@ class SearchEngine(object):
                         self._state_to_city_mapper[state] = [major_city, ]
 
                     try:
+                        self._state_to_county_mapper[state].append(county)
+                    except:
+                        self._state_to_county_mapper[state] = [county, ]
+
+                    try:
                         self._city_to_state_mapper[major_city].append(state)
                     except:
                         self._city_to_state_mapper[major_city] = [state, ]
 
+                    try:
+                        self._county_to_state_mapper[county].append(state)
+                    except:
+                        self._county_to_state_mapper[county] = [state, ]
+
         self._city_list = list(self._city_list)
         self._city_list.sort()
+        self._county_list = list(self._county_list)
+        self._county_list.sort()
         self._state_list = list(STATE_ABBR_LONG_TO_SHORT)
         self._state_list.sort()
 
@@ -165,7 +186,18 @@ class SearchEngine(object):
                 key=lambda x: x[0]
             )
         )
+
+        self._state_to_county_mapper = OrderedDict(
+            sorted(
+                self._state_to_county_mapper.items(),
+                key=lambda x: x[0]
+            )
+        )
+
         for v in self._state_to_city_mapper.values():
+            v.sort()
+
+        for v in self._state_to_county_mapper.values():
             v.sort()
 
         self._city_to_state_mapper = OrderedDict(
@@ -177,6 +209,15 @@ class SearchEngine(object):
         for v in self._city_to_state_mapper.values():
             v.sort()
 
+        self._county_to_state_mapper = OrderedDict(
+            sorted(
+                self._county_to_state_mapper.items(),
+                key=lambda x: x[0]
+            )
+        )
+        for v in self._county_to_state_mapper.values():
+            v.sort()
+
     @property
     def city_list(self):  # pragma: no cover
         """
@@ -185,6 +226,15 @@ class SearchEngine(object):
         if self._city_list is None:
             self._get_cache_data()
         return self._city_list
+
+    @property
+    def county_list(self):  # pragma: no cover
+        """
+        Return all available city name.
+        """
+        if self._county_list is None:
+            self._get_cache_data()
+        return self._county_list
 
     @property
     def state_list(self):  # pragma: no cover
@@ -201,11 +251,23 @@ class SearchEngine(object):
             self._get_cache_data()
         return self._state_to_city_mapper
 
+        @property
+        def state_to_county_mapper(self):  # pragma: no cover
+            if self._state_to_county_mapper is None:
+                self._get_cache_data()
+            return self._state_to_county_mapper
+
     @property
     def city_to_state_mapper(self):  # pragma: no cover
         if self._city_to_state_mapper is None:
             self._get_cache_data()
         return self._city_to_state_mapper
+
+    @property
+    def county_to_state_mapper(self):  # pragma: no cover
+        if self._county_to_state_mapper is None:
+            self._get_cache_data()
+        return self._county_to_state_mapper
 
     def find_state(self, state, best_match=True, min_similarity=70):
         """
@@ -261,7 +323,7 @@ class SearchEngine(object):
             city_pool = self.city_list
 
         result_city_list = list()
-
+        result_county_list = list()
         if best_match:
             city, confidence = extractOne(city, city_pool)
             if confidence >= min_similarity:
@@ -275,6 +337,30 @@ class SearchEngine(object):
             raise ValueError("'%s' is not a valid city name" % city)
 
         return result_city_list
+
+    def find_county(self, county, state=None, best_match=True, min_similarity=70):
+        # find out what is the city that user looking for
+        if state:
+            state_sort = self.find_state(state, best_match=True)[0]
+            county_pool = self.state_to_county_mapper[state_sort.upper()]
+        else:
+            county_pool = self.county_list
+        # nothing in county pool look into that
+        result_county_list = list()
+
+        if best_match:
+            county, confidence = extractOne(county, county_pool)
+            if confidence >= min_similarity:
+                result_county_list.append(county)
+        else:
+            for county, confidence in extract(county, county_pool):
+                if confidence >= min_similarity:
+                    result_county_list.append(county)
+        print(result_county_list)
+        if len(result_county_list) == 0:
+            raise ValueError("'%s' is not a valid county name" % county)
+
+        return result_county_list
 
     @staticmethod
     def _resolve_sort_by(sort_by, flag_radius_query):
@@ -311,7 +397,7 @@ class SearchEngine(object):
               lat=None,
               lng=None,
               radius=None,
-
+              county=None,
               population_lower=None,
               population_upper=None,
               population_density_lower=None,
@@ -444,6 +530,12 @@ class SearchEngine(object):
                 city = self.find_city(city, None, best_match=True)[0]
                 filters.append(self.zip_klass.major_city == city)
             except ValueError:  # pragma: no cover
+                return []
+        elif (county is not None):
+            try:
+                county = self.find_county(county, None, best_match=True)[0]
+                filters.append(self.zip_klass.county == county)
+            except ValueError:
                 return []
         else:
             pass
@@ -644,6 +736,23 @@ class SearchEngine(object):
             ascending=ascending, returns=returns,
         )
 
+    def by_county(self,
+                  county,
+                  zipcode_type=ZipcodeType.Standard,
+                  sort_by=SimpleZipcode.zipcode.name,
+                  ascending=True,
+                  returns=DEFAULT_LIMIT):
+        """
+        Search zipcode information by fuzzy City name.
+
+        My engine use fuzzy match and guess what is the city you want.
+        """
+        return self.query(
+            county=county,
+            sort_by=sort_by, zipcode_type=zipcode_type,
+            ascending=ascending, returns=returns,
+        )
+
     def by_state(self,
                  state,
                  zipcode_type=ZipcodeType.Standard,
@@ -675,6 +784,25 @@ class SearchEngine(object):
         """
         return self.query(
             city=city,
+            state=state,
+            sort_by=sort_by, zipcode_type=zipcode_type,
+            ascending=ascending, returns=returns,
+        )
+
+    def by_county_and_state(self,
+                            county,
+                            state,
+                            zipcode_type=ZipcodeType.Standard,
+                            sort_by=SimpleZipcode.zipcode.name,
+                            ascending=True,
+                            returns=DEFAULT_LIMIT):
+        """
+        Search zipcode information by fuzzy county and state name.
+
+        My engine use fuzzy match and guess what is the state you want.
+        """
+        return self.query(
+            county=county,
             state=state,
             sort_by=sort_by, zipcode_type=zipcode_type,
             ascending=ascending, returns=returns,
