@@ -356,7 +356,6 @@ class SearchEngine(object):
             for county, confidence in extract(county, county_pool):
                 if confidence >= min_similarity:
                     result_county_list.append(county)
-        print(result_county_list)
         if len(result_county_list) == 0:
             raise ValueError("'%s' is not a valid county name" % county)
 
